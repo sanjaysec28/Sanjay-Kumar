@@ -1,0 +1,6 @@
+{
+  "name": "Musha Empire — Admin Portal",
+  "description": "Internal administrative management portal for Musha Empire salon operations, bookings, staff, and services.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

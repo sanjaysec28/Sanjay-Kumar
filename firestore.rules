@@ -1,0 +1,134 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for user authorization and role checks
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Bootstrapped admin check for system runtime administrators
+    function isBootstrappedAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'sanjaykumarbjc@gmail.com' ||
+        request.auth.token.email == 'admin@mushaempire.com'
+      );
+    }
+
+    function hasUserDoc() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserRole() {
+      return hasUserDoc() ? getUserData().role : (isBootstrappedAdmin() ? 'admin' : null);
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || getUserRole() == 'admin';
+    }
+
+    function isManager() {
+      return isAdmin() || getUserRole() == 'manager';
+    }
+
+    function isStaff() {
+      return isAdmin() || getUserRole() in ['admin', 'manager', 'receptionist', 'stylist', 'cashier'];
+    }
+
+    function isBookingManager() {
+      return isAdmin() || getUserRole() in ['admin', 'manager', 'receptionist'];
+    }
+
+    // 1. Users collection: users can view and update their own document. Admins have full access.
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isStaff());
+      allow create: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow update: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || isManager());
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
+    // 2. Services catalog: Public read for active customer booking. Staff with privileges can manage.
+    match /services/{serviceId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated() && (isAdmin() || isManager());
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
+    // 3. Offers collection: Public read. Staff with privileges can manage.
+    match /offers/{offerId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated() && (isAdmin() || isManager());
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
+    // 4. Gallery lookbook: Public read for published media. Staff with privileges can manage.
+    match /gallery/{itemId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated() && (isAdmin() || isManager());
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
+    // 5. Settings collection:
+    // - homepage: Public read for customer landing page. Writing/publishing requires admin.
+    // - homepage_draft: Only authorized internal staff (admin or manager) can read and update.
+    // - salon: Public read for operating hours. Admin/Manager can write.
+    match /settings/{docId} {
+      allow read: if docId in ['homepage', 'salon'] || (isAuthenticated() && (isAdmin() || isManager()));
+      allow update, create: if isAuthenticated() && (
+        (docId == 'homepage_draft' && (isAdmin() || isManager())) ||
+        (docId == 'homepage' && isAdmin()) ||
+        (docId == 'salon' && (isAdmin() || isManager()))
+      );
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
+    // 6. Bookings collection: Customers can view and create their own bookings.
+    // Privileged updates (status mutations: confirm, complete, cancel) require booking management role (admin, manager, receptionist).
+    // Stylists and cashiers cannot modify booking status or records.
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == resource.data.customerId ||
+        request.auth.uid == resource.data.customer_id ||
+        isStaff()
+      );
+      allow create: if isAuthenticated() && (
+        request.auth.uid == request.resource.data.customerId ||
+        request.auth.uid == request.resource.data.customer_id ||
+        isBookingManager()
+      );
+      allow update: if isAuthenticated() && isBookingManager();
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
+    // 7. Time slots and availability collections: Public read for booking calendar. Staff can manage.
+    match /slots/{slotId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthenticated() && isBookingManager();
+    }
+
+    match /public_availability/{docId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthenticated() && isBookingManager();
+    }
+
+    match /availability/{docId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthenticated() && isBookingManager();
+    }
+
+    // 8. Tickets / Support collection: Customer own access or internal staff.
+    match /tickets/{ticketId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == resource.data.customerId ||
+        isStaff()
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && isBookingManager();
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+  }
+}
