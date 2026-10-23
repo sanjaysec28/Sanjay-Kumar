@@ -92,14 +92,57 @@ export const Dashboard: React.FC = () => {
           usersQuery,
           (snapshot) => {
             let count = 0;
+            const userBookings: NormalizedBooking[] = [];
+
             snapshot.forEach((docSnap) => {
-              const data = docSnap.data() as UserProfile;
+              const data = docSnap.data() as any;
               // Only count customer accounts
               if (data.role === 'customer' || !data.role) {
                 count++;
               }
+
+              // Extract concierge_requests
+              const rawRequests = data.concierge_requests || data.conciergeRequests || data.bookings;
+              if (Array.isArray(rawRequests)) {
+                rawRequests.forEach((req, idx) => {
+                  if (req && typeof req === 'object') {
+                    const reqId =
+                      req.id ||
+                      req.ticket_code ||
+                      req.ticketCode ||
+                      req.bookingId ||
+                      `dash-req-${docSnap.id}-${idx}`;
+
+                    userBookings.push(
+                      normalizeBooking(reqId, {
+                        ...req,
+                        customerId: req.customerId || req.customer_id || docSnap.id,
+                        customerName: req.customerName || req.customer_name || data.displayName || data.name || 'Client',
+                        customerEmail: req.customerEmail || req.customer_email || data.email || '',
+                        customerPhone: req.customerPhone || req.customer_phone || data.phoneNumber || data.phone || undefined,
+                      })
+                    );
+                  }
+                });
+              }
             });
+
             setCustomerCount(count > 0 ? count : 0);
+
+            if (userBookings.length > 0) {
+              setAllBookings((prev) => {
+                const map = new Map<string, NormalizedBooking>();
+                userBookings.forEach((b) => map.set(b.id, b));
+                prev.forEach((b) => map.set(b.id, b));
+                const merged = Array.from(map.values());
+                merged.sort((a, b) => {
+                  const dateA = `${a.date} ${a.time}`;
+                  const dateB = `${b.date} ${b.time}`;
+                  return dateB.localeCompare(dateA);
+                });
+                return merged;
+              });
+            }
           },
           (err) => {
             console.warn('Notice: Firestore users listener notice:', err.message);
@@ -117,19 +160,25 @@ export const Dashboard: React.FC = () => {
             snapshot.forEach((docSnap) => {
               loaded.push(normalizeBooking(docSnap.id, docSnap.data()));
             });
-            // Sort by date & time descending (latest first)
-            loaded.sort((a, b) => {
-              const dateA = `${a.date} ${a.time}`;
-              const dateB = `${b.date} ${b.time}`;
-              return dateB.localeCompare(dateA);
-            });
-            setAllBookings(loaded);
+            if (loaded.length > 0) {
+              setAllBookings((prev) => {
+                const map = new Map<string, NormalizedBooking>();
+                prev.forEach((b) => map.set(b.id, b));
+                loaded.forEach((b) => map.set(b.id, b));
+                const merged = Array.from(map.values());
+                merged.sort((a, b) => {
+                  const dateA = `${a.date} ${a.time}`;
+                  const dateB = `${b.date} ${b.time}`;
+                  return dateB.localeCompare(dateA);
+                });
+                return merged;
+              });
+            }
             setLoading(false);
             setIsRefreshing(false);
           },
           (err) => {
             console.warn('Notice: Firestore bookings listener notice:', err.message);
-            setAllBookings([]);
             setLoading(false);
             setIsRefreshing(false);
           }

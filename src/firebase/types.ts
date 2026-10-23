@@ -463,17 +463,30 @@ export interface CustomerSummary {
 }
 
 export function normalizeBooking(id: string, data: Record<string, any>): NormalizedBooking {
+  const serviceName =
+    data.service_name ||
+    data.serviceName ||
+    data.category ||
+    data.service ||
+    'Concierge Service';
+
+  const rawStatus =
+    data.booking_status ||
+    data.bookingStatus ||
+    data.status ||
+    'pending';
+
   return {
-    id,
-    customerId: data.customer_id || data.customerId || '',
-    customerName: data.customer_name || data.customerName || data.name || 'Client',
+    id: id || data.id || data.bookingId || data.ticket_code || data.ticketCode || `req-${Math.random().toString(36).substring(2, 9)}`,
+    customerId: data.customerId || data.customer_id || data.uid || data.userId || '',
+    customerName: data.customerName || data.customer_name || data.name || data.clientName || 'Client',
     customerEmail: data.customer_email || data.customerEmail || data.email || '',
     customerPhone: data.customer_phone || data.customerPhone || data.phone || undefined,
-    serviceId: data.service_id || data.serviceId || '',
-    serviceName: data.service_name || data.serviceName || 'Treatment',
+    serviceId: data.service_id || data.serviceId || data.category || 'concierge',
+    serviceName,
     gender: data.gender || undefined,
-    date: data.booking_date || data.date || '',
-    time: data.start_time || data.time || '',
+    date: data.booking_date || data.bookingDate || data.date || '',
+    time: data.start_time || data.startTime || data.time || data.preferred_time || '',
     endTime: data.end_time || data.endTime || undefined,
     durationMinutes:
       data.duration_minutes != null
@@ -481,11 +494,11 @@ export function normalizeBooking(id: string, data: Record<string, any>): Normali
         : data.durationMinutes != null
         ? Number(data.durationMinutes)
         : undefined,
-    price: Number(data.price ?? data.totalPrice ?? 0),
-    status: (data.status || 'pending').toLowerCase(),
+    price: Number(data.price ?? data.totalPrice ?? data.cost ?? 0),
+    status: String(rawStatus).toLowerCase(),
     paymentStatus: (data.payment_status || data.paymentStatus || 'pending').toLowerCase(),
-    ticketCode: data.ticket_code || data.bookingCode || '',
-    notes: data.notes || undefined,
+    ticketCode: data.ticket_code || data.ticketCode || data.bookingCode || data.code || '',
+    notes: data.notes || data.special_requests || data.remarks || undefined,
     cancellationReason: data.cancellation_reason || data.cancellationReason || undefined,
     createdAt: data.created_at || data.createdAt,
     updatedAt: data.updated_at || data.updatedAt,

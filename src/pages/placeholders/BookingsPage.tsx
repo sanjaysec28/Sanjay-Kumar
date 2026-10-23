@@ -92,7 +92,8 @@ export const BookingsPage: React.FC = () => {
   // Action Loading State for Confirm/Complete
   const [processingId, setProcessingId] = useState<string | null>(null);
 
-  // 1. Subscribe to Firestore `bookings` collection
+  // 1. Subscribe to Firestore `users` (containing nested `concierge_requests` arrays)
+  // and `bookings` collection (if top-level records exist), merging without duplication.
   useEffect(() => {
     if (!db) {
       setLoading(false);
@@ -102,34 +103,90 @@ export const BookingsPage: React.FC = () => {
     setLoading(true);
     setError(null);
 
-    const bookingsColRef = collection(db, COLLECTIONS.BOOKINGS);
-    // Real-time listener
-    const unsubscribe = onSnapshot(
-      bookingsColRef,
+    let usersBookingsMap = new Map<string, NormalizedBooking>();
+    let topLevelBookingsMap = new Map<string, NormalizedBooking>();
+
+    const updateCombinedBookings = () => {
+      // Merge: top-level bookings takes precedence if same id, otherwise user concierge requests
+      const mergedMap = new Map<string, NormalizedBooking>();
+
+      // 1. Add user concierge requests first
+      usersBookingsMap.forEach((booking, id) => {
+        mergedMap.set(id, booking);
+      });
+
+      // 2. Add or overlay top-level bookings
+      topLevelBookingsMap.forEach((booking, id) => {
+        mergedMap.set(id, booking);
+      });
+
+      const loaded = Array.from(mergedMap.values());
+
+      // Default sort: newest date & time first
+      loaded.sort((a, b) => {
+        const dateDiff = (b.date || '').localeCompare(a.date || '');
+        if (dateDiff !== 0) return dateDiff;
+        return (b.time || '').localeCompare(a.time || '');
+      });
+
+      setBookings(loaded);
+      setLoading(false);
+    };
+
+    // Listener A: `users` collection to extract `concierge_requests` array
+    const usersColRef = collection(db, COLLECTIONS.USERS);
+    const unsubUsers = onSnapshot(
+      usersColRef,
       (snapshot) => {
-        const loaded: NormalizedBooking[] = [];
+        usersBookingsMap.clear();
+
         snapshot.forEach((docSnap) => {
-          loaded.push(normalizeBooking(docSnap.id, docSnap.data()));
+          const userData = docSnap.data() || {};
+          const customerUid = docSnap.id;
+          const defaultCustomerName = userData.displayName || userData.name || 'Client';
+          const defaultCustomerEmail = userData.email || '';
+          const defaultCustomerPhone = userData.phoneNumber || userData.phone || undefined;
+
+          // Check for nested concierge_requests array
+          const rawRequests = userData.concierge_requests || userData.conciergeRequests || userData.bookings;
+          if (Array.isArray(rawRequests)) {
+            rawRequests.forEach((req, idx) => {
+              if (req && typeof req === 'object') {
+                const reqId =
+                  req.id ||
+                  req.ticket_code ||
+                  req.ticketCode ||
+                  req.bookingId ||
+                  `usr-req-${customerUid}-${idx}`;
+
+                // Inject customer attributes if missing in the nested item
+                const enrichedData: Record<string, any> = {
+                  ...req,
+                  customerId: req.customerId || req.customer_id || customerUid,
+                  customer_id: req.customer_id || req.customerId || customerUid,
+                  customerName: req.customerName || req.customer_name || defaultCustomerName,
+                  customer_name: req.customer_name || req.customerName || defaultCustomerName,
+                  customerEmail: req.customerEmail || req.customer_email || defaultCustomerEmail,
+                  customer_email: req.customer_email || req.customerEmail || defaultCustomerEmail,
+                  customerPhone: req.customerPhone || req.customer_phone || defaultCustomerPhone,
+                  customer_phone: req.customer_phone || req.customerPhone || defaultCustomerPhone,
+                };
+
+                usersBookingsMap.set(reqId, normalizeBooking(reqId, enrichedData));
+              }
+            });
+          }
         });
 
-        // Default sort: newest date & time first
-        loaded.sort((a, b) => {
-          const dateDiff = (b.date || '').localeCompare(a.date || '');
-          if (dateDiff !== 0) return dateDiff;
-          return (b.time || '').localeCompare(a.time || '');
-        });
-
-        setBookings(loaded);
-        setLoading(false);
+        updateCombinedBookings();
       },
       (err: any) => {
         const errCode = err?.code || 'unknown';
         const errMsg = err?.message || 'Database query error';
-        console.warn('Notice listening to bookings collection:', errCode, errMsg);
-        
+        console.warn('Notice listening to users concierge_requests:', errCode, errMsg);
         if (errCode === 'permission-denied') {
           setError(
-            'Missing or insufficient permissions to read bookings collection. Please ensure your signed-in account is listed with an authorized staff role (admin, manager, receptionist) in the users collection or has rules deployed.'
+            'Missing or insufficient permissions to read users directory. Ensure your signed-in staff account has access.'
           );
         } else {
           setError(`Unable to load bookings from database: [${errCode}] ${errMsg}`);
@@ -138,7 +195,28 @@ export const BookingsPage: React.FC = () => {
       }
     );
 
-    return () => unsubscribe();
+    // Listener B: `bookings` collection (if top-level collection records exist)
+    const bookingsColRef = collection(db, COLLECTIONS.BOOKINGS);
+    const unsubBookings = onSnapshot(
+      bookingsColRef,
+      (snapshot) => {
+        topLevelBookingsMap.clear();
+        snapshot.forEach((docSnap) => {
+          topLevelBookingsMap.set(docSnap.id, normalizeBooking(docSnap.id, docSnap.data()));
+        });
+        updateCombinedBookings();
+      },
+      (err: any) => {
+        // Soft fail if top-level bookings doesn't exist or is empty
+        console.warn('Notice listening to top-level bookings:', err?.code, err?.message);
+        updateCombinedBookings();
+      }
+    );
+
+    return () => {
+      unsubUsers();
+      unsubBookings();
+    };
   }, [user]);
 
   // Compute unique services list for the filter

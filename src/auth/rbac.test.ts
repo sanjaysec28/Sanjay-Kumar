@@ -950,6 +950,38 @@ function runRbacTestSuite() {
   assert(testResolveRole({ email: 'client@gmail.com' }, 'customer') === 'customer', 'P2.8. Existing customer strictly remains customer');
   assert(!isAuthorizedAdminRole(testResolveRole({ email: 'client@gmail.com' }, null)), 'P2.8. New customer blocked from Admin Portal');
 
+  // P2.9. Nested Concierge Requests Extraction from Customer Documents
+  const mockCustomerDoc = {
+    displayName: 'Priya Sharma',
+    email: 'priya.sharma@example.com',
+    phoneNumber: '+91 98765 43210',
+    role: 'customer',
+    concierge_requests: [
+      {
+        booking_date: '2026-11-05',
+        booking_status: 'confirmed',
+        category: 'Hair Styling & Keratin',
+        customerId: 'cust-ps-01',
+        customerName: 'Priya Sharma',
+        customer_email: 'priya.sharma@example.com',
+        customer_id: 'cust-ps-01',
+        start_time: '14:30',
+        ticket_code: 'TCK-KERATIN-99',
+        price: 4500,
+      },
+    ],
+  };
+
+  const extractedItem = mockCustomerDoc.concierge_requests[0];
+  const normalizedNestedBooking = normalizeBooking(extractedItem.ticket_code, extractedItem);
+  assert(normalizedNestedBooking.customerName === 'Priya Sharma', 'P2.9. Customer name mapped from nested concierge request');
+  assert(normalizedNestedBooking.customerEmail === 'priya.sharma@example.com', 'P2.9. Customer email mapped from nested concierge request');
+  assert(normalizedNestedBooking.serviceName === 'Hair Styling & Keratin', 'P2.9. Category mapped to serviceName');
+  assert(normalizedNestedBooking.status === 'confirmed', 'P2.9. Booking status normalized from booking_status');
+  assert(normalizedNestedBooking.date === '2026-11-05', 'P2.9. Booking date extracted correctly');
+  assert(normalizedNestedBooking.ticketCode === 'TCK-KERATIN-99', 'P2.9. Ticket code preserved');
+  assert(normalizedNestedBooking.price === 4500, 'P2.9. Price extracted correctly');
+
   console.log(`\n========================================`);
 
   console.log(`TEST SUMMARY: ${testsPassed} passed, ${testsFailed} failed`);
