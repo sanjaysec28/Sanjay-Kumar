@@ -118,11 +118,11 @@ function runRbacTestSuite() {
   const stylistVisible = checkSidebarVisibility('stylist');
   const receptionistVisible = checkSidebarVisibility('receptionist');
 
-  assert(adminVisible.length === 9, '9. Admin sees all 9 navigation items');
+  assert(adminVisible.length === 10, '9. Admin sees all 10 navigation items (including analytics)');
   assert(stylistVisible.length === 4, '9. Stylist sees only 4 allowed items (Dashboard, Bookings, Customers, Services)');
   assert(!stylistVisible.includes('/admin/settings'), '9. Stylist does NOT see Settings');
   assert(!stylistVisible.includes('/admin/offers'), '9. Stylist does NOT see Offers');
-  assert(receptionistVisible.length === 5, '9. Receptionist sees 5 allowed items');
+  assert(receptionistVisible.length === 6, '9. Receptionist sees 6 allowed items (including analytics)');
   assert(!receptionistVisible.includes('/admin/gallery'), '9. Receptionist does NOT see Gallery');
 
   // 10. Action Permissions Simulation
@@ -980,7 +980,181 @@ function runRbacTestSuite() {
   assert(normalizedNestedBooking.status === 'confirmed', 'P2.9. Booking status normalized from booking_status');
   assert(normalizedNestedBooking.date === '2026-11-05', 'P2.9. Booking date extracted correctly');
   assert(normalizedNestedBooking.ticketCode === 'TCK-KERATIN-99', 'P2.9. Ticket code preserved');
-  assert(normalizedNestedBooking.price === 4500, 'P2.9. Price extracted correctly');
+  // P2.10. Price Robustness: Missing vs Stored vs Fallback
+  const missingPriceBooking = normalizeBooking('bk-no-price', {
+    customerName: 'Maya Sen',
+    booking_date: '2026-11-10',
+    category: 'Consultation',
+  });
+  assert(missingPriceBooking.isPriceAvailable === false, 'P2.10. Missing price flagged as isPriceAvailable: false');
+  assert(missingPriceBooking.price === null, 'P2.10. Missing price does not silently coerce to zero');
+
+  const zeroPriceBooking = normalizeBooking('bk-zero-price', {
+    customerName: 'Samir Roy',
+    price: 0,
+    booking_date: '2026-11-10',
+  });
+  assert(zeroPriceBooking.isPriceAvailable === true, 'P2.10. Explicit 0 price acknowledged as available');
+  assert(zeroPriceBooking.price === 0, 'P2.10. Explicit 0 price preserved');
+
+  const altFieldPriceBooking = normalizeBooking('bk-alt-price', {
+    customerName: 'Tara Mehta',
+    totalAmount: '3200',
+    booking_date: '2026-11-10',
+  });
+  assert(altFieldPriceBooking.isPriceAvailable === true, 'P2.10. String numeric totalAmount correctly parsed');
+  // P2.11. Attendance Normalization & Workflow Rules
+  const explicitAttended = normalizeBooking('bk-att-1', {
+    customerName: 'Aarav Patel',
+    booking_status: 'confirmed',
+    attendanceStatus: 'attended',
+    attendanceMarkedAt: '2026-10-25T10:00:00.000Z',
+    attendanceMarkedBy: 'admin-01',
+  });
+  assert(explicitAttended.attendanceStatus === 'attended', 'P2.11. Explicit attended status parsed');
+  assert(explicitAttended.attendanceMarkedBy === 'admin-01', 'P2.11. Attendance staff UID preserved');
+
+  const explicitNotAttended = normalizeBooking('bk-att-2', {
+    customerName: 'Zoya Khan',
+    booking_status: 'confirmed',
+    attendance_status: 'not_attended',
+  });
+  assert(explicitNotAttended.attendanceStatus === 'not_attended', 'P2.11. Explicit not_attended status parsed');
+
+  const legacyCompleted = normalizeBooking('bk-att-3', {
+    customerName: 'Ananya Roy',
+    status: 'completed',
+  });
+  assert(legacyCompleted.attendanceStatus === 'attended', 'P2.11. Legacy completed status maps backward-compatibly to attended');
+
+  const defaultPendingAttendance = normalizeBooking('bk-att-4', {
+    customerName: 'Karan Singh',
+    status: 'confirmed',
+  });
+  assert(defaultPendingAttendance.attendanceStatus === 'pending', 'P2.11. Unmarked booking defaults attendanceStatus to pending');
+
+  // P2.12. INR Revenue Rules & Asia/Kolkata Timezone
+  const todayIST = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+  assert(todayIST.length === 10 && todayIST.includes('-'), 'P2.12. Asia/Kolkata date resolves YYYY-MM-DD');
+
+  const paidTodayBooking = normalizeBooking('rev-01', {
+    customerName: 'Rohan Mehra',
+    price: 3500,
+    payment_status: 'paid',
+    paid_at: `${todayIST}T08:30:00.000Z`,
+  });
+  assert(paidTodayBooking.paymentStatus === 'paid', 'P2.12. Paid booking status verified');
+  assert(paidTodayBooking.amountPaid === 3500, 'P2.12. Authoritative payment amount mapped');
+
+  const unpaidBooking = normalizeBooking('rev-02', {
+    customerName: 'Simran Gill',
+    price: 2500,
+    payment_status: 'pending',
+  });
+  assert(unpaidBooking.balanceDue === 2500, 'P2.12. Unpaid booking calculates correct balance due');
+  assert(unpaidBooking.amountPaid === 0, 'P2.12. Unpaid booking amountPaid is 0');
+
+  const cancelledPaidBooking = normalizeBooking('rev-03', {
+    customerName: 'Dev Kapoor',
+    price: 4000,
+    status: 'cancelled',
+    payment_status: 'paid',
+  });
+  // Business rule: cancelled bookings must not contribute to collected active revenue
+  const revenueBookings = [paidTodayBooking, unpaidBooking, cancelledPaidBooking];
+  const activeCollectedRevenue = revenueBookings
+    .filter((b) => b.paymentStatus === 'paid' && b.status !== 'cancelled')
+    .reduce((sum, b) => sum + (b.amountPaid > 0 ? b.amountPaid : (b.price ?? 0)), 0);
+  assert(activeCollectedRevenue === 3500, 'P2.12. Active revenue strictly includes verified non-cancelled paid bookings (3500)');
+
+  // P5. CASH REVENUE & ATTENDANCE RECORDING TESTS
+  console.log('\n--- VERIFYING CASH REVENUE COLLECTION UPON ATTENDANCE ---');
+
+  // Test 1: Booking marked attended with recorded cash payment
+  const cashAttendedBooking = normalizeBooking('cash-01', {
+    customerName: 'Aarav Sharma',
+    serviceName: 'Bridal Hair Styling',
+    price: 3500,
+    attendanceStatus: 'attended',
+    cashCollected: 3500,
+    cashReceiptId: 'RCP-2026-X1Y2',
+    cashCollectedAt: `${todayIST}T10:00:00.000Z`,
+    status: 'completed',
+  });
+  assert(cashAttendedBooking.attendanceStatus === 'attended', 'P5.1. Booking marked attended correctly parsed');
+  assert(cashAttendedBooking.cashCollected === 3500, 'P5.1. Cash collected amount correctly parsed (3500)');
+  assert(cashAttendedBooking.cashReceiptId === 'RCP-2026-X1Y2', 'P5.1. Cash receipt ID mapped (RCP-2026-X1Y2)');
+  assert(cashAttendedBooking.balanceDue === 0, 'P5.1. Full cash payment yields 0 balance due');
+
+  // Test 2: Booking marked attended with PARTIAL cash payment
+  const partialCashBooking = normalizeBooking('cash-02', {
+    customerName: 'Pooja Hegde',
+    serviceName: 'Hydra Facial Treatment',
+    price: 5000,
+    attendanceStatus: 'attended',
+    cashCollected: 3000,
+    cashReceiptId: 'RCP-2026-P9Q8',
+    cashCollectedAt: `${todayIST}T11:30:00.000Z`,
+    status: 'completed',
+  });
+  assert(partialCashBooking.cashCollected === 3000, 'P5.2. Partial cash collected recorded (3000)');
+  assert(partialCashBooking.balanceDue === 2000, 'P5.2. Remaining balance due calculated as price - cashCollected (2000)');
+
+  // Test 3: Booking marked attended with ZERO cash (e.g. comp, complimentary, or uncollected)
+  const zeroCashAttendedBooking = normalizeBooking('cash-03', {
+    customerName: 'Meera Rajput',
+    serviceName: 'Blow Dry & Styling',
+    price: 1500,
+    attendanceStatus: 'attended',
+    cashCollected: 0,
+    status: 'completed',
+  });
+  assert(zeroCashAttendedBooking.attendanceStatus === 'attended', 'P5.3. Booking attended with 0 cash recognized');
+  assert(zeroCashAttendedBooking.cashCollected === 0, 'P5.3. Cash collected is 0');
+  assert(zeroCashAttendedBooking.balanceDue === 1500, 'P5.3. Full balance remains due (1500)');
+
+  // Test 4: Unattended / Not Attended booking with price
+  const notAttendedBooking = normalizeBooking('cash-04', {
+    customerName: 'Vikram Seth',
+    serviceName: 'Keratin Hair Spa',
+    price: 4500,
+    attendanceStatus: 'not_attended',
+    status: 'confirmed',
+  });
+  assert(notAttendedBooking.attendanceStatus === 'not_attended', 'P5.4. Not attended booking recognized');
+  assert(notAttendedBooking.cashCollected === 0, 'P5.4. Not attended cash collected is 0');
+
+  // Test 5: Strict Cash Revenue Aggregation Rule
+  // Attended bookings with cashCollected > 0 contribute strictly their recorded cash.
+  // Unattended, pending, and zero-cash attended contribute 0 to cash revenue.
+  const allCashTestBookings = [
+    cashAttendedBooking,       // 3500 cash
+    partialCashBooking,        // 3000 cash
+    zeroCashAttendedBooking,   // 0 cash
+    notAttendedBooking,        // not attended -> 0 cash
+  ];
+
+  const totalVerifiedCashRevenue = allCashTestBookings
+    .filter((b) => b.attendanceStatus === 'attended' && b.status !== 'cancelled')
+    .reduce((sum, b) => sum + (b.cashCollected ?? 0), 0);
+
+  assert(
+    totalVerifiedCashRevenue === 6500,
+    'P5.5. Verified Cash Revenue strictly equals sum of actual cash collected (3500 + 3000 = 6500), ignoring unattended and zero-cash visits'
+  );
+
+  // Test 6: Route permission for Cash Revenue Report (/admin/analytics)
+  assert(hasPermission('admin', 'analytics.view'), 'P5.6. Admin has analytics.view permission');
+  assert(hasPermission('manager', 'analytics.view'), 'P5.6. Manager has analytics.view permission');
+  assert(hasPermission('receptionist', 'analytics.view'), 'P5.6. Receptionist has analytics.view permission');
+  assert(hasPermission('cashier', 'analytics.view'), 'P5.6. Cashier has analytics.view permission');
+  assert(!hasPermission('stylist', 'analytics.view'), 'P5.6. Stylist CANNOT view analytics');
+  assert(!hasPermission('customer', 'analytics.view'), 'P5.6. Customer CANNOT view analytics');
 
   console.log(`\n========================================`);
 

@@ -3,6 +3,7 @@ import React, { createContext, useContext, useEffect, useState, useTransition } 
 export type AdminRoute =
   | '/admin/login'
   | '/admin'
+  | '/admin/analytics'
   | '/admin/bookings'
   | '/admin/customers'
   | '/admin/services'

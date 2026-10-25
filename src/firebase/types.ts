@@ -425,6 +425,14 @@ export interface BookingItem {
   updatedAt?: unknown;
 }
 
+export interface NormalizedBookingItem {
+  id?: string;
+  name: string;
+  category?: string;
+  price?: number;
+  quantity?: number;
+}
+
 export interface NormalizedBooking {
   id: string;
   customerId: string;
@@ -433,14 +441,31 @@ export interface NormalizedBooking {
   customerPhone?: string;
   serviceId: string;
   serviceName: string;
+  category?: string;
   gender?: string;
   date: string; // YYYY-MM-DD
   time: string; // HH:MM
   endTime?: string;
   durationMinutes?: number;
-  price: number;
+  price: number | null; // null if genuinely missing/unrecorded
+  isPriceAvailable: boolean;
+  subtotal?: number;
+  discount?: number;
+  amountPaid: number;
+  balanceDue: number | null;
+  paymentMethod?: string;
+  transactionId?: string;
+  items?: NormalizedBookingItem[];
   status: string; // 'confirmed' | 'pending' | 'completed' | 'cancelled'
-  paymentStatus: string; // 'paid' | 'pending' | 'refunded'
+  paymentStatus: string; // 'paid' | 'pending' | 'refunded' | 'failed'
+  attendanceStatus?: 'pending' | 'attended' | 'not_attended';
+  attendanceMarkedAt?: unknown;
+  attendanceMarkedBy?: string;
+  cashCollected?: number;
+  cashReceiptId?: string;
+  cashCollectedAt?: unknown;
+  cashCollectedBy?: string;
+  paymentTimestamp?: unknown;
   ticketCode?: string;
   notes?: string;
   cancellationReason?: string;
@@ -468,6 +493,9 @@ export function normalizeBooking(id: string, data: Record<string, any>): Normali
     data.serviceName ||
     data.category ||
     data.service ||
+    data.treatment ||
+    data.package_name ||
+    data.packageName ||
     'Concierge Service';
 
   const rawStatus =
@@ -475,6 +503,180 @@ export function normalizeBooking(id: string, data: Record<string, any>): Normali
     data.bookingStatus ||
     data.status ||
     'pending';
+
+  // Parse itemized services if present (e.g. data.items, data.services, data.booked_services)
+  const rawItems = Array.isArray(data.items)
+    ? data.items
+    : Array.isArray(data.services)
+    ? data.services
+    : Array.isArray(data.booked_services)
+    ? data.booked_services
+    : Array.isArray(data.bookedServices)
+    ? data.bookedServices
+    : null;
+
+  let items: NormalizedBookingItem[] | undefined = undefined;
+  let itemsCalculatedSum: number | null = null;
+
+  if (rawItems && rawItems.length > 0) {
+    items = rawItems.map((item: any, idx: number) => {
+      const itemPriceVal =
+        item.price != null
+          ? Number(item.price)
+          : item.amount != null
+          ? Number(item.amount)
+          : item.cost != null
+          ? Number(item.cost)
+          : undefined;
+      const validItemPrice = itemPriceVal !== undefined && !isNaN(itemPriceVal) ? itemPriceVal : undefined;
+      return {
+        id: item.id || `item-${idx}`,
+        name: item.name || item.service_name || item.serviceName || item.title || 'Service Item',
+        category: item.category || undefined,
+        price: validItemPrice,
+        quantity: Number(item.quantity || 1) || 1,
+      };
+    });
+
+    // Check if itemized prices sum to a valid total
+    const allHavePrice = items.every((it) => it.price !== undefined);
+    if (allHavePrice) {
+      itemsCalculatedSum = items.reduce((sum, it) => sum + (it.price! * (it.quantity || 1)), 0);
+    }
+  }
+
+  // Extract candidate price from various standard Firestore field names
+  const rawPriceCandidate =
+    data.price != null
+      ? data.price
+      : data.totalPrice != null
+      ? data.totalPrice
+      : data.total_price != null
+      ? data.total_price
+      : data.total_amount != null
+      ? data.total_amount
+      : data.totalAmount != null
+      ? data.totalAmount
+      : data.final_amount != null
+      ? data.final_amount
+      : data.finalAmount != null
+      ? data.finalAmount
+      : data.amount != null
+      ? data.amount
+      : data.cost != null
+      ? data.cost
+      : data.booking_amount != null
+      ? data.booking_amount
+      : data.bookingAmount != null
+      ? data.bookingAmount
+      : data.service_price != null
+      ? data.service_price
+      : data.servicePrice != null
+      ? data.servicePrice
+      : itemsCalculatedSum != null
+      ? itemsCalculatedSum
+      : null;
+
+  let parsedPrice: number | null = null;
+  let isPriceAvailable = false;
+
+  if (rawPriceCandidate !== null && rawPriceCandidate !== undefined && rawPriceCandidate !== '') {
+    const num = Number(rawPriceCandidate);
+    if (!isNaN(num)) {
+      parsedPrice = num;
+      isPriceAvailable = true;
+    }
+  }
+
+  // Extract amount paid
+  const rawPaidCandidate =
+    data.amount_paid != null
+      ? data.amount_paid
+      : data.amountPaid != null
+      ? data.amountPaid
+      : data.paid_amount != null
+      ? data.paid_amount
+      : data.paidAmount != null
+      ? data.paidAmount
+      : data.advance_paid != null
+      ? data.advance_paid
+      : data.advancePaid != null
+      ? data.advancePaid
+      : null;
+
+  let amountPaid = 0;
+  if (rawPaidCandidate !== null && rawPaidCandidate !== undefined && rawPaidCandidate !== '') {
+    const pNum = Number(rawPaidCandidate);
+    if (!isNaN(pNum)) {
+      amountPaid = pNum;
+    }
+  } else if ((data.payment_status || data.paymentStatus || '').toLowerCase() === 'paid' && parsedPrice !== null) {
+    // If explicitly marked as 'paid' with verified price, full amount was collected
+    amountPaid = parsedPrice;
+  }
+
+  // Extract discount / offer
+  const rawDiscount =
+    data.discount != null
+      ? Number(data.discount)
+      : data.discount_amount != null
+      ? Number(data.discount_amount)
+      : data.discountAmount != null
+      ? Number(data.discountAmount)
+      : undefined;
+  const discount = rawDiscount !== undefined && !isNaN(rawDiscount) ? rawDiscount : undefined;
+
+  // Subtotal
+  const rawSubtotal =
+    data.subtotal != null
+      ? Number(data.subtotal)
+      : data.sub_total != null
+      ? Number(data.sub_total)
+      : undefined;
+  const subtotal = rawSubtotal !== undefined && !isNaN(rawSubtotal) ? rawSubtotal : undefined;
+
+  // Extract cash revenue specifically collected upon attendance
+  const rawCash =
+    data.cashCollected != null
+      ? data.cashCollected
+      : data.cash_collected != null
+      ? data.cash_collected
+      : data.amountReceived != null
+      ? data.amountReceived
+      : data.amount_received != null
+      ? data.amount_received
+      : null;
+  let cashCollected = 0;
+  if (rawCash !== null && rawCash !== undefined && rawCash !== '') {
+    const cNum = Number(rawCash);
+    if (!isNaN(cNum) && cNum >= 0) {
+      cashCollected = cNum;
+    }
+  }
+
+  // Calculate balance due when price is available
+  let balanceDue: number | null = null;
+  if (isPriceAvailable && parsedPrice !== null) {
+    const totalCovered = Math.max(amountPaid, cashCollected);
+    balanceDue = Math.max(0, parsedPrice - totalCovered);
+  }
+
+  // Payment method & transaction ID
+  const paymentMethod =
+    data.payment_method ||
+    data.paymentMethod ||
+    data.payment_mode ||
+    data.paymentMode ||
+    (data.razorpay_payment_id ? 'Razorpay Online' : undefined);
+
+  const transactionId =
+    data.transaction_id ||
+    data.transactionId ||
+    data.payment_id ||
+    data.paymentId ||
+    data.razorpay_payment_id ||
+    data.razorpayPaymentId ||
+    undefined;
 
   return {
     id: id || data.id || data.bookingId || data.ticket_code || data.ticketCode || `req-${Math.random().toString(36).substring(2, 9)}`,
@@ -484,6 +686,7 @@ export function normalizeBooking(id: string, data: Record<string, any>): Normali
     customerPhone: data.customer_phone || data.customerPhone || data.phone || undefined,
     serviceId: data.service_id || data.serviceId || data.category || 'concierge',
     serviceName,
+    category: data.category || undefined,
     gender: data.gender || undefined,
     date: data.booking_date || data.bookingDate || data.date || '',
     time: data.start_time || data.startTime || data.time || data.preferred_time || '',
@@ -494,9 +697,63 @@ export function normalizeBooking(id: string, data: Record<string, any>): Normali
         : data.durationMinutes != null
         ? Number(data.durationMinutes)
         : undefined,
-    price: Number(data.price ?? data.totalPrice ?? data.cost ?? 0),
+    price: parsedPrice,
+    isPriceAvailable,
+    subtotal,
+    discount,
+    amountPaid,
+    balanceDue,
+    paymentMethod,
+    transactionId,
+    items,
     status: String(rawStatus).toLowerCase(),
     paymentStatus: (data.payment_status || data.paymentStatus || 'pending').toLowerCase(),
+    attendanceStatus: (() => {
+      const explicit = data.attendanceStatus || data.attendance_status;
+      if (explicit === 'attended' || explicit === 'not_attended') return explicit;
+      if (explicit === 'pending') return 'pending';
+      // Backward compatibility: completed bookings without explicit attendance are treated as attended
+      if (String(rawStatus).toLowerCase() === 'completed') return 'attended';
+      return 'pending';
+    })(),
+    attendanceMarkedAt:
+      data.attendanceMarkedAt ||
+      data.attendance_marked_at ||
+      data.completed_at ||
+      data.completedAt ||
+      undefined,
+    attendanceMarkedBy: data.attendanceMarkedBy || data.attendance_marked_by || undefined,
+    cashCollected,
+    cashReceiptId:
+      data.cashReceiptId ||
+      data.cash_receipt_id ||
+      data.receiptId ||
+      data.receipt_id ||
+      undefined,
+    cashCollectedAt:
+      data.cashCollectedAt ||
+      data.cash_collected_at ||
+      data.attendanceMarkedAt ||
+      data.attendance_marked_at ||
+      data.paid_at ||
+      data.paidAt ||
+      undefined,
+    cashCollectedBy:
+      data.cashCollectedBy ||
+      data.cash_collected_by ||
+      data.attendanceMarkedBy ||
+      data.attendance_marked_by ||
+      undefined,
+    paymentTimestamp:
+      data.paid_at ||
+      data.paidAt ||
+      data.payment_date ||
+      data.paymentDate ||
+      data.payment_timestamp ||
+      data.paymentTimestamp ||
+      data.transaction_time ||
+      data.transactionTime ||
+      undefined,
     ticketCode: data.ticket_code || data.ticketCode || data.bookingCode || data.code || '',
     notes: data.notes || data.special_requests || data.remarks || undefined,
     cancellationReason: data.cancellation_reason || data.cancellationReason || undefined,

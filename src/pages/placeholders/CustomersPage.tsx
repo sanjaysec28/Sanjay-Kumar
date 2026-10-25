@@ -787,7 +787,7 @@ export const CustomersPage: React.FC = () => {
 
                         <div className="text-right">
                           <span className="font-bold text-[#171513] block">
-                            ${b.price.toFixed(2)}
+                            {b.isPriceAvailable && b.price !== null ? `₹${b.price.toLocaleString('en-IN')}` : '—'}
                           </span>
                           <span className="text-[10px] text-[#6B7280] capitalize">
                             {b.paymentStatus}

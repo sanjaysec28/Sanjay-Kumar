@@ -13,6 +13,7 @@ import {
   LogIn,
   X,
   Crown,
+  BarChart3,
 } from 'lucide-react';
 import { useRouter } from '../../router/Router';
 import { useAuth } from '../../context/AuthContext';
@@ -32,6 +33,12 @@ export const navItems: NavItem[] = [
     path: '/admin',
     icon: LayoutDashboard,
     requiredPermission: 'dashboard.view',
+  },
+  {
+    name: 'Cash Analytics',
+    path: '/admin/analytics',
+    icon: BarChart3,
+    requiredPermission: 'analytics.view',
   },
   {
     name: 'Bookings',

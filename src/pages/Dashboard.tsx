@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   Users,
   CalendarCheck2,
   CalendarClock,
-  DollarSign,
   ArrowRight,
   Sparkles,
   CalendarDays,
@@ -14,15 +13,17 @@ import {
   AlertCircle,
   Plus,
   CheckCircle2,
-  HelpCircle,
-  Percent,
+  AlertTriangle,
+  CreditCard,
+  UserCheck,
+  UserX,
+  Wallet,
+  Receipt,
 } from 'lucide-react';
 import {
   collection,
   doc,
   onSnapshot,
-  query,
-  limit,
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { COLLECTIONS } from '../firebase/collections';
@@ -37,7 +38,6 @@ import {
   normalizeBooking,
   type NormalizedBooking,
   type SalonSettings,
-  type UserProfile,
 } from '../firebase/types';
 
 interface MetricCardState {
@@ -52,7 +52,7 @@ interface MetricCardState {
 }
 
 export const Dashboard: React.FC = () => {
-  const { userProfile, role, user } = useAuth();
+  const { user } = useAuth();
   const { navigate } = useRouter();
 
   // Loading & Error states
@@ -69,6 +69,38 @@ export const Dashboard: React.FC = () => {
   // Modal / Toast for "New Booking" quick action
   const [showNewBookingNotice, setShowNewBookingNotice] = useState<boolean>(false);
 
+  // Authoritative Timezone: Configured salon timezone or default to Asia/Kolkata
+  const salonTimezone = salonSettings?.timezone || 'Asia/Kolkata';
+
+  // Compute today's date in salon timezone (YYYY-MM-DD)
+  const todayStr = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: salonTimezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+    } catch {
+      return new Date().toISOString().split('T')[0];
+    }
+  }, [salonTimezone]);
+
+  // Formatted display date for header
+  const formattedToday = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: salonTimezone,
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }).format(new Date());
+    } catch {
+      return new Date().toDateString();
+    }
+  }, [salonTimezone]);
+
   // Subscribe to real-time Firestore data
   useEffect(() => {
     if (!db) {
@@ -83,20 +115,39 @@ export const Dashboard: React.FC = () => {
     let unsubBookings: (() => void) | null = null;
     let unsubSettings: (() => void) | null = null;
 
+    const usersBookingsMap = new Map<string, NormalizedBooking>();
+    const topLevelBookingsMap = new Map<string, NormalizedBooking>();
+
+    const updateCombinedBookings = () => {
+      const mergedMap = new Map<string, NormalizedBooking>();
+      usersBookingsMap.forEach((b, id) => mergedMap.set(id, b));
+      topLevelBookingsMap.forEach((b, id) => mergedMap.set(id, b));
+      const loaded = Array.from(mergedMap.values());
+      loaded.sort((a, b) => {
+        const dateDiff = (b.date || '').localeCompare(a.date || '');
+        if (dateDiff !== 0) return dateDiff;
+        return (b.time || '').localeCompare(a.time || '');
+      });
+      setAllBookings(loaded);
+      setLoading(false);
+      setIsRefreshing(false);
+    };
+
     try {
-      // 1. Listen to customers in `users` collection only if authenticated
+      // 1. Listen to customers and nested concierge_requests in `users` collection
       if (user) {
         const usersColRef = collection(db, COLLECTIONS.USERS);
-        const usersQuery = query(usersColRef, limit(50));
         unsubUsers = onSnapshot(
-          usersQuery,
+          usersColRef,
           (snapshot) => {
             let count = 0;
-            const userBookings: NormalizedBooking[] = [];
+            usersBookingsMap.clear();
 
             snapshot.forEach((docSnap) => {
               const data = docSnap.data() as any;
-              // Only count customer accounts
+              const customerUid = docSnap.id;
+
+              // Count registered customers
               if (data.role === 'customer' || !data.role) {
                 count++;
               }
@@ -111,12 +162,13 @@ export const Dashboard: React.FC = () => {
                       req.ticket_code ||
                       req.ticketCode ||
                       req.bookingId ||
-                      `dash-req-${docSnap.id}-${idx}`;
+                      `dash-req-${customerUid}-${idx}`;
 
-                    userBookings.push(
+                    usersBookingsMap.set(
+                      reqId,
                       normalizeBooking(reqId, {
                         ...req,
-                        customerId: req.customerId || req.customer_id || docSnap.id,
+                        customerId: req.customerId || req.customer_id || customerUid,
                         customerName: req.customerName || req.customer_name || data.displayName || data.name || 'Client',
                         customerEmail: req.customerEmail || req.customer_email || data.email || '',
                         customerPhone: req.customerPhone || req.customer_phone || data.phoneNumber || data.phone || undefined,
@@ -128,70 +180,39 @@ export const Dashboard: React.FC = () => {
             });
 
             setCustomerCount(count > 0 ? count : 0);
-
-            if (userBookings.length > 0) {
-              setAllBookings((prev) => {
-                const map = new Map<string, NormalizedBooking>();
-                userBookings.forEach((b) => map.set(b.id, b));
-                prev.forEach((b) => map.set(b.id, b));
-                const merged = Array.from(map.values());
-                merged.sort((a, b) => {
-                  const dateA = `${a.date} ${a.time}`;
-                  const dateB = `${b.date} ${b.time}`;
-                  return dateB.localeCompare(dateA);
-                });
-                return merged;
-              });
-            }
+            updateCombinedBookings();
           },
           (err) => {
             console.warn('Notice: Firestore users listener notice:', err.message);
             setCustomerCount(null);
+            updateCombinedBookings();
           }
         );
 
-        // 2. Listen to real bookings in `bookings` collection only if authenticated
+        // 2. Listen to top-level bookings collection
         const bookingsColRef = collection(db, COLLECTIONS.BOOKINGS);
-        const bookingsQuery = query(bookingsColRef, limit(40));
         unsubBookings = onSnapshot(
-          bookingsQuery,
+          bookingsColRef,
           (snapshot) => {
-            const loaded: NormalizedBooking[] = [];
+            topLevelBookingsMap.clear();
             snapshot.forEach((docSnap) => {
-              loaded.push(normalizeBooking(docSnap.id, docSnap.data()));
+              topLevelBookingsMap.set(docSnap.id, normalizeBooking(docSnap.id, docSnap.data()));
             });
-            if (loaded.length > 0) {
-              setAllBookings((prev) => {
-                const map = new Map<string, NormalizedBooking>();
-                prev.forEach((b) => map.set(b.id, b));
-                loaded.forEach((b) => map.set(b.id, b));
-                const merged = Array.from(map.values());
-                merged.sort((a, b) => {
-                  const dateA = `${a.date} ${a.time}`;
-                  const dateB = `${b.date} ${b.time}`;
-                  return dateB.localeCompare(dateA);
-                });
-                return merged;
-              });
-            }
-            setLoading(false);
-            setIsRefreshing(false);
+            updateCombinedBookings();
           },
           (err) => {
             console.warn('Notice: Firestore bookings listener notice:', err.message);
-            setLoading(false);
-            setIsRefreshing(false);
+            updateCombinedBookings();
           }
         );
       } else {
-        // In preview mode
         setCustomerCount(null);
         setAllBookings([]);
         setLoading(false);
         setIsRefreshing(false);
       }
 
-      // 3. Listen to salon settings from `settings/salon` (Public read allowed)
+      // 3. Listen to salon settings from `settings/salon`
       const settingsDocRef = doc(db, COLLECTIONS.SETTINGS, 'salon');
       unsubSettings = onSnapshot(
         settingsDocRef,
@@ -224,61 +245,169 @@ export const Dashboard: React.FC = () => {
 
   const handleManualRefresh = () => {
     setIsRefreshing(true);
-    // Simulates quick pulse while real-time listeners maintain authoritative data
     setTimeout(() => {
       setIsRefreshing(false);
     }, 600);
   };
 
-  // Derive authoritative metrics based ONLY on real Firestore data
-  const todayStr = new Date().toISOString().split('T')[0];
+  // Helper to determine if an authorized cash collection occurred today in the salon timezone
+  const checkIsCashCollectedToday = (b: NormalizedBooking, targetDate: string, tz: string): boolean => {
+    if (b.status === 'cancelled') return false;
+    const isAttended = b.attendanceStatus === 'attended' || b.status === 'completed';
+    if (!isAttended) return false;
+    const cash = b.cashCollected ?? 0;
+    if (cash <= 0) return false;
 
-  // Today's bookings count
-  const todayBookingsList = allBookings.filter(
-    (b) => b.date === todayStr && b.status !== 'cancelled'
-  );
-  const todayBookingsCount = todayBookingsList.length;
+    const rawTs =
+      b.cashCollectedAt ||
+      b.attendanceMarkedAt ||
+      b.paymentTimestamp ||
+      (b.raw as any)?.cash_collected_at ||
+      (b.raw as any)?.attendance_marked_at;
 
-  // Upcoming appointments (future date or today with future/pending status)
-  const upcomingAppointmentsList = allBookings
-    .filter((b) => b.date >= todayStr && b.status !== 'cancelled')
-    .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
-  const upcomingCount = upcomingAppointmentsList.length;
+    if (rawTs) {
+      let d: Date | null = null;
+      if (typeof rawTs === 'string' || typeof rawTs === 'number') {
+        d = new Date(rawTs);
+      } else if (typeof (rawTs as any)?.toDate === 'function') {
+        d = (rawTs as any).toDate();
+      }
 
-  // Revenue: calculated ONLY from authoritative paid bookings (not cancelled)
-  const paidBookings = allBookings.filter(
-    (b) => b.paymentStatus === 'paid' && b.status !== 'cancelled' && b.price > 0
-  );
-  const authoritativeRevenue = paidBookings.reduce((sum, b) => sum + b.price, 0);
+      if (d && !isNaN(d.getTime())) {
+        try {
+          const paymentDateStr = new Intl.DateTimeFormat('en-CA', {
+            timeZone: tz,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(d);
+          return paymentDateStr === targetDate;
+        } catch {
+          // Fallback
+        }
+      }
+    }
 
-  // Status Distribution for Booking Activity
-  const statusCounts = {
-    confirmed: allBookings.filter((b) => b.status === 'confirmed').length,
-    completed: allBookings.filter((b) => b.status === 'completed').length,
-    pending: allBookings.filter((b) => b.status === 'pending').length,
-    cancelled: allBookings.filter((b) => b.status === 'cancelled').length,
+    // Fallback: If appointment was scheduled for today and recorded cash upon attendance
+    if (b.date === targetDate && cash > 0) {
+      return true;
+    }
+
+    return false;
   };
-  const totalBookingsCount = allBookings.length;
+
+  // Derive authoritative metrics based ONLY on real Firestore data
+  const metrics = useMemo(() => {
+    // 1. Today's bookings
+    const todayBookingsList = allBookings.filter(
+      (b) => b.date === todayStr && b.status !== 'cancelled'
+    );
+    const todayBookingsCount = todayBookingsList.length;
+
+    // 2. Upcoming appointments (scheduled from today onward, not cancelled, completed, or attended)
+    const upcomingList = allBookings.filter(
+      (b) =>
+        (b.date || '') >= todayStr &&
+        b.status !== 'cancelled' &&
+        b.status !== 'completed' &&
+        b.attendanceStatus !== 'attended'
+    );
+    const upcomingCount = upcomingList.length;
+
+    // 3. Completed appointments (explicitly marked completed or attended)
+    const completedList = allBookings.filter(
+      (b) => b.status === 'completed' || b.attendanceStatus === 'attended'
+    );
+    const completedCount = completedList.length;
+
+    // 4. Not attended appointments
+    const notAttendedList = allBookings.filter(
+      (b) => b.attendanceStatus === 'not_attended'
+    );
+    const notAttendedCount = notAttendedList.length;
+
+    // 5. Today's Cash Revenue: strictly counted only when client is attended with recorded cash received
+    const todayCashList = allBookings.filter((b) => checkIsCashCollectedToday(b, todayStr, salonTimezone));
+    const todayPaidCount = todayCashList.length;
+    const todayRevenue = todayCashList.reduce((sum, b) => sum + (b.cashCollected ?? 0), 0);
+
+    // 6. Total Cash Revenue: sum of all cash confirmed across attended visits
+    const allAttendedCashList = allBookings.filter(
+      (b) =>
+        b.status !== 'cancelled' &&
+        (b.attendanceStatus === 'attended' || b.status === 'completed') &&
+        (b.cashCollected ?? 0) > 0
+    );
+    const totalPaidCount = allAttendedCashList.length;
+    const totalRevenue = allAttendedCashList.reduce((sum, b) => sum + (b.cashCollected ?? 0), 0);
+
+    // 7. Pending / Outstanding Balances: bookings with uncollected balances
+    const outstandingBookings = allBookings.filter((b) => {
+      if (b.status === 'cancelled') return false;
+      const bPrice = b.isPriceAvailable && b.price !== null ? b.price : null;
+      if (bPrice === null) return true;
+      const covered = (b.cashCollected ?? 0) > 0 ? (b.cashCollected ?? 0) : b.amountPaid;
+      return covered < bPrice;
+    });
+    const pendingPaymentsCount = outstandingBookings.length;
+    let unpricedPendingCount = 0;
+    const pendingBalanceSum = outstandingBookings.reduce((sum, b) => {
+      if (b.balanceDue !== null && b.balanceDue !== undefined) {
+        return sum + b.balanceDue;
+      }
+      if (b.isPriceAvailable && b.price !== null) {
+        const covered = (b.cashCollected ?? 0) > 0 ? (b.cashCollected ?? 0) : b.amountPaid;
+        return sum + Math.max(0, b.price - covered);
+      }
+      unpricedPendingCount++;
+      return sum;
+    }, 0);
+
+    return {
+      todayBookingsCount,
+      upcomingCount,
+      completedCount,
+      notAttendedCount,
+      todayPaidCount,
+      todayRevenue,
+      totalPaidCount,
+      totalRevenue,
+      pendingPaymentsCount,
+      pendingBalanceSum,
+      unpricedPendingCount,
+      statusCounts: {
+        confirmed: allBookings.filter((b) => b.status === 'confirmed').length,
+        completed: completedCount,
+        pending: allBookings.filter((b) => b.status === 'pending').length,
+        cancelled: allBookings.filter((b) => b.status === 'cancelled').length,
+      },
+    };
+  }, [allBookings, todayStr, salonTimezone]);
+
+  // Upcoming appointments list for the table preview
+  const upcomingAppointmentsList = useMemo(() => {
+    return allBookings
+      .filter(
+        (b) =>
+          (b.date || '') >= todayStr &&
+          b.status !== 'cancelled' &&
+          b.status !== 'completed' &&
+          b.attendanceStatus !== 'attended'
+      )
+      .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+  }, [allBookings, todayStr]);
 
   // Recent bookings (top 6 latest)
-  const recentBookingsList = allBookings.slice(0, 6);
+  const recentBookingsList = useMemo(() => allBookings.slice(0, 6), [allBookings]);
 
-  // Dynamic Date string
-  const formattedToday = new Intl.DateTimeFormat('en-US', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  }).format(new Date());
-
-  // 4 Summary Metrics Configuration
+  // 8 Mandatory Real-Time Metric Cards
   const metricCards: MetricCardState[] = [
     {
       label: 'TOTAL CUSTOMERS',
       value:
         customerCount !== null && customerCount > 0
-          ? customerCount.toLocaleString()
-          : 'No customers yet',
+          ? customerCount.toLocaleString('en-IN')
+          : 'No data yet',
       isNoData: customerCount === null || customerCount === 0,
       subtext:
         customerCount !== null && customerCount > 0
@@ -291,47 +420,109 @@ export const Dashboard: React.FC = () => {
     },
     {
       label: "TODAY'S BOOKINGS",
-      value:
-        todayBookingsCount > 0 ? todayBookingsCount.toString() : 'No data yet',
-      isNoData: todayBookingsCount === 0,
+      value: metrics.todayBookingsCount > 0 ? metrics.todayBookingsCount.toString() : '0',
+      isNoData: metrics.todayBookingsCount === 0,
       subtext:
-        todayBookingsCount > 0
-          ? `Appointments scheduled for ${todayStr}`
-          : 'No bookings scheduled for today',
+        metrics.todayBookingsCount > 0
+          ? `Appointments scheduled for ${todayStr} (IST)`
+          : `No appointments scheduled for today`,
       icon: CalendarCheck2,
       accentColor: '#B7791F',
-      badgeLabel: todayBookingsCount > 0 ? 'Today' : undefined,
+      badgeLabel: metrics.todayBookingsCount > 0 ? 'Today' : undefined,
       badgeVariant: 'gold',
     },
     {
       label: 'UPCOMING APPOINTMENTS',
-      value:
-        upcomingCount > 0 ? upcomingCount.toString() : 'No data yet',
-      isNoData: upcomingCount === 0,
+      value: metrics.upcomingCount > 0 ? metrics.upcomingCount.toString() : '0',
+      isNoData: metrics.upcomingCount === 0,
       subtext:
-        upcomingCount > 0
-          ? 'Active reservations from today onward'
-          : 'No upcoming scheduled appointments',
+        metrics.upcomingCount > 0
+          ? 'Active reservations ahead'
+          : 'No upcoming scheduled visits',
       icon: CalendarClock,
+      accentColor: '#3B82F6',
+      badgeLabel: metrics.upcomingCount > 0 ? 'Scheduled' : undefined,
+      badgeVariant: 'blue',
+    },
+    {
+      label: "TODAY'S CASH REVENUE",
+      value:
+        metrics.todayRevenue > 0
+          ? `₹${metrics.todayRevenue.toLocaleString('en-IN')}`
+          : metrics.todayPaidCount === 0
+          ? '₹0'
+          : 'Price unrecorded',
+      isNoData: metrics.todayRevenue === 0 && metrics.todayPaidCount === 0,
+      subtext:
+        metrics.todayPaidCount > 0
+          ? `${metrics.todayPaidCount} cash collection${metrics.todayPaidCount === 1 ? '' : 's'} recorded today`
+          : 'No cash collected today',
+      icon: CreditCard,
       accentColor: '#16A34A',
-      badgeLabel: upcomingCount > 0 ? 'Scheduled' : undefined,
+      badgeLabel: metrics.todayRevenue > 0 ? 'Cash IST' : undefined,
       badgeVariant: 'success',
     },
     {
-      label: 'REVENUE',
+      label: 'TOTAL CASH REVENUE',
       value:
-        authoritativeRevenue > 0
-          ? `$${authoritativeRevenue.toLocaleString()}`
-          : 'No payment data yet',
-      isNoData: authoritativeRevenue === 0,
+        metrics.totalRevenue > 0
+          ? `₹${metrics.totalRevenue.toLocaleString('en-IN')}`
+          : '₹0',
+      isNoData: metrics.totalRevenue === 0,
       subtext:
-        authoritativeRevenue > 0
-          ? `${paidBookings.length} paid booking${paidBookings.length === 1 ? '' : 's'} collected`
-          : 'No paid appointments recorded in database',
-      icon: DollarSign,
+        metrics.totalPaidCount > 0
+          ? `${metrics.totalPaidCount} attended cash transaction${metrics.totalPaidCount === 1 ? '' : 's'}`
+          : 'No attended cash payments in DB',
+      icon: Wallet,
       accentColor: '#16A34A',
-      badgeLabel: authoritativeRevenue > 0 ? 'Authoritative' : undefined,
+      badgeLabel: metrics.totalRevenue > 0 ? 'Attended Cash' : undefined,
       badgeVariant: 'success',
+    },
+    {
+      label: 'COMPLETED APPOINTMENTS',
+      value: metrics.completedCount > 0 ? metrics.completedCount.toString() : '0',
+      isNoData: metrics.completedCount === 0,
+      subtext:
+        metrics.completedCount > 0
+          ? 'Attended and finished salon visits'
+          : 'No completed appointments yet',
+      icon: UserCheck,
+      accentColor: '#16A34A',
+      badgeLabel: metrics.completedCount > 0 ? 'Attended' : undefined,
+      badgeVariant: 'success',
+    },
+    {
+      label: 'NOT ATTENDED',
+      value: metrics.notAttendedCount > 0 ? metrics.notAttendedCount.toString() : '0',
+      isNoData: metrics.notAttendedCount === 0,
+      subtext:
+        metrics.notAttendedCount > 0
+          ? 'Marked not attended by salon admin'
+          : 'No unattended visits recorded',
+      icon: UserX,
+      accentColor: '#DC2626',
+      badgeLabel: metrics.notAttendedCount > 0 ? 'No-Show' : undefined,
+      badgeVariant: 'danger',
+    },
+    {
+      label: 'PENDING PAYMENTS',
+      value:
+        metrics.pendingBalanceSum > 0
+          ? `₹${metrics.pendingBalanceSum.toLocaleString('en-IN')}`
+          : metrics.pendingPaymentsCount > 0
+          ? `${metrics.pendingPaymentsCount} pending`
+          : '₹0',
+      isNoData: metrics.pendingPaymentsCount === 0,
+      subtext:
+        metrics.pendingPaymentsCount > 0
+          ? `${metrics.pendingPaymentsCount} unpaid booking${metrics.pendingPaymentsCount === 1 ? '' : 's'}${
+              metrics.unpricedPendingCount > 0 ? ` (${metrics.unpricedPendingCount} unpriced)` : ''
+            }`
+          : 'All active bookings settled',
+      icon: AlertTriangle,
+      accentColor: '#D97706',
+      badgeLabel: metrics.pendingPaymentsCount > 0 ? 'Outstanding' : undefined,
+      badgeVariant: 'warning',
     },
   ];
 
@@ -358,22 +549,33 @@ export const Dashboard: React.FC = () => {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <span className="text-[11px] font-bold text-[#B7791F] uppercase tracking-wider block">
-              MUSHA EMPIRE ADMIN
+              MUSHA EMPIRE ADMIN PORTAL
             </span>
             <h1 className="text-2xl sm:text-3xl font-bold text-[#171513] tracking-tight mt-0.5">
-              Dashboard
+              Live Salon Dashboard
             </h1>
             <p className="text-xs sm:text-sm text-[#6B7280] font-normal mt-1 max-w-2xl">
-              Real-time salon operations, appointment schedule, and client volume overview.
+              Real-time salon operations, INR revenue tracking, and client attendance monitoring for {salonTimezone}.
             </p>
           </div>
 
           <div className="flex items-center flex-wrap gap-2.5 shrink-0">
-            {/* Dynamic Real Date Indicator */}
+            {/* Dynamic Real Date Indicator in IST */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#F7F8FA] border border-[#E5E7EB] text-xs font-semibold text-[#171513]">
               <Clock className="w-3.5 h-3.5 text-[#B7791F]" />
-              <span>{formattedToday}</span>
+              <span>{formattedToday} ({salonTimezone === 'Asia/Kolkata' ? 'IST' : salonTimezone})</span>
             </div>
+
+            {/* Cash Revenue Report Button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate('/admin/analytics')}
+              leftIcon={<Receipt className="w-3.5 h-3.5 text-[#B7791F]" />}
+              className="min-h-[38px] text-[#B7791F] border-[#FCEEC8] bg-[#FEF9EE] hover:bg-[#FDF2D9]"
+            >
+              Cash Revenue Report
+            </Button>
 
             {/* Controlled Refresh Button */}
             <Button
@@ -406,7 +608,7 @@ export const Dashboard: React.FC = () => {
         )}
       </div>
 
-      {/* 2. SUMMARY CARDS (4 PREMIUM CARDS) */}
+      {/* 2. 8 REAL-TIME METRIC CARDS (2 ROWS OF 4) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {metricCards.map((card, index) => {
           const Icon = card.icon;
@@ -444,7 +646,7 @@ export const Dashboard: React.FC = () => {
 
                 <div className="mt-1">
                   <p
-                    className={`tracking-tight ${
+                    className={`tracking-tight tabular-nums ${
                       card.isNoData
                         ? 'text-base font-semibold text-[#9CA3AF] italic'
                         : 'text-2xl font-bold text-[#171513]'
@@ -543,14 +745,12 @@ export const Dashboard: React.FC = () => {
             </PermissionGate>
           </div>
 
-          {/* New Booking Notice Modal/Drawer (Prompt 3 placeholder notification) */}
           {showNewBookingNotice && (
             <div className="mt-4 p-4 rounded-xl bg-[#FEF9EE] border border-[#FCEEC8] flex items-start justify-between gap-3 text-xs">
               <div>
                 <p className="font-bold text-[#B7791F]">Booking Creation Flow</p>
                 <p className="text-[#8D580F] mt-0.5 leading-relaxed">
-                  The appointment creation wizard will be activated in the upcoming Booking Management module.
-                  Existing bookings from the customer web application continue to sync directly to this dashboard.
+                  Appointments submitted by clients or created through the Bookings portal automatically sync in real-time to this dashboard.
                 </p>
               </div>
               <button
@@ -574,7 +774,7 @@ export const Dashboard: React.FC = () => {
               subtitle="Live status distribution across all registered salon bookings"
               action={
                 <Badge variant="neutral">
-                  Total Records: {totalBookingsCount}
+                  Total Records: {allBookings.length}
                 </Badge>
               }
             />
@@ -585,7 +785,7 @@ export const Dashboard: React.FC = () => {
                   <div className="h-4 bg-[#E5E7EB] rounded w-5/6"></div>
                   <div className="h-4 bg-[#E5E7EB] rounded w-3/4"></div>
                 </div>
-              ) : totalBookingsCount === 0 ? (
+              ) : allBookings.length === 0 ? (
                 <EmptyState
                   title="No booking activity yet"
                   description="Booking activity will appear here once appointments are created."
@@ -593,7 +793,6 @@ export const Dashboard: React.FC = () => {
                 />
               ) : (
                 <div className="space-y-4">
-                  {/* Status distribution bars based on REAL data */}
                   <div className="space-y-3">
                     {/* Confirmed */}
                     <div>
@@ -603,14 +802,14 @@ export const Dashboard: React.FC = () => {
                           Confirmed
                         </span>
                         <span className="text-[#171513]">
-                          {statusCounts.confirmed} ({Math.round((statusCounts.confirmed / totalBookingsCount) * 100)}%)
+                          {metrics.statusCounts.confirmed} ({Math.round((metrics.statusCounts.confirmed / allBookings.length) * 100)}%)
                         </span>
                       </div>
                       <div className="w-full h-2 rounded-full bg-[#F3F4F6] overflow-hidden">
                         <div
                           className="h-full bg-[#16A34A] rounded-full transition-all duration-300"
                           style={{
-                            width: `${(statusCounts.confirmed / totalBookingsCount) * 100}%`,
+                            width: `${(metrics.statusCounts.confirmed / allBookings.length) * 100}%`,
                           }}
                         />
                       </div>
@@ -624,14 +823,14 @@ export const Dashboard: React.FC = () => {
                           Pending
                         </span>
                         <span className="text-[#171513]">
-                          {statusCounts.pending} ({Math.round((statusCounts.pending / totalBookingsCount) * 100)}%)
+                          {metrics.statusCounts.pending} ({Math.round((metrics.statusCounts.pending / allBookings.length) * 100)}%)
                         </span>
                       </div>
                       <div className="w-full h-2 rounded-full bg-[#F3F4F6] overflow-hidden">
                         <div
                           className="h-full bg-[#D97706] rounded-full transition-all duration-300"
                           style={{
-                            width: `${(statusCounts.pending / totalBookingsCount) * 100}%`,
+                            width: `${(metrics.statusCounts.pending / allBookings.length) * 100}%`,
                           }}
                         />
                       </div>
@@ -642,17 +841,17 @@ export const Dashboard: React.FC = () => {
                       <div className="flex justify-between text-xs font-semibold mb-1">
                         <span className="text-[#2563EB] flex items-center gap-1.5">
                           <CalendarCheck2 className="w-3.5 h-3.5" />
-                          Completed
+                          Completed / Attended
                         </span>
                         <span className="text-[#171513]">
-                          {statusCounts.completed} ({Math.round((statusCounts.completed / totalBookingsCount) * 100)}%)
+                          {metrics.statusCounts.completed} ({Math.round((metrics.statusCounts.completed / allBookings.length) * 100)}%)
                         </span>
                       </div>
                       <div className="w-full h-2 rounded-full bg-[#F3F4F6] overflow-hidden">
                         <div
                           className="h-full bg-[#2563EB] rounded-full transition-all duration-300"
                           style={{
-                            width: `${(statusCounts.completed / totalBookingsCount) * 100}%`,
+                            width: `${(metrics.statusCounts.completed / allBookings.length) * 100}%`,
                           }}
                         />
                       </div>
@@ -666,14 +865,14 @@ export const Dashboard: React.FC = () => {
                           Cancelled
                         </span>
                         <span className="text-[#171513]">
-                          {statusCounts.cancelled} ({Math.round((statusCounts.cancelled / totalBookingsCount) * 100)}%)
+                          {metrics.statusCounts.cancelled} ({Math.round((metrics.statusCounts.cancelled / allBookings.length) * 100)}%)
                         </span>
                       </div>
                       <div className="w-full h-2 rounded-full bg-[#F3F4F6] overflow-hidden">
                         <div
                           className="h-full bg-[#DC2626] rounded-full transition-all duration-300"
                           style={{
-                            width: `${(statusCounts.cancelled / totalBookingsCount) * 100}%`,
+                            width: `${(metrics.statusCounts.cancelled / allBookings.length) * 100}%`,
                           }}
                         />
                       </div>
@@ -727,14 +926,12 @@ export const Dashboard: React.FC = () => {
                       </Badge>
                     </div>
 
-                    {salonSettings.timezone && (
-                      <div className="flex justify-between items-center py-1 border-b border-[#F3F4F6]">
-                        <span className="text-[#6B7280]">Timezone</span>
-                        <span className="font-semibold text-[#171513]">
-                          {salonSettings.timezone}
-                        </span>
-                      </div>
-                    )}
+                    <div className="flex justify-between items-center py-1 border-b border-[#F3F4F6]">
+                      <span className="text-[#6B7280]">Timezone</span>
+                      <span className="font-semibold text-[#171513]">
+                        {salonSettings.timezone || 'Asia/Kolkata'}
+                      </span>
+                    </div>
 
                     {salonSettings.phone && (
                       <div className="flex justify-between items-center py-1 border-b border-[#F3F4F6]">
@@ -891,14 +1088,16 @@ export const Dashboard: React.FC = () => {
                         </Badge>
                       </td>
                       <td className="py-3 text-right pr-2">
-                        <div className="font-semibold text-[#171513]">
-                          {b.price > 0 ? `$${b.price}` : '-'}
+                        <div className="font-semibold text-[#171513] tabular-nums">
+                          {b.isPriceAvailable && b.price !== null
+                            ? `₹${b.price.toLocaleString('en-IN')}`
+                            : '—'}
                         </div>
                         <div className="text-[10px] text-[#6B7280] mt-0.5 capitalize">
                           {b.paymentStatus === 'paid' ? (
                             <span className="text-[#16A34A] font-medium">Paid</span>
                           ) : (
-                            <span className="text-[#D97706] font-medium">Pending Pay</span>
+                            <span className="text-[#D97706] font-medium">Unpaid</span>
                           )}
                         </div>
                       </td>

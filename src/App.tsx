@@ -9,6 +9,7 @@ import { RouterProvider, useRouter } from './router/Router';
 import { AdminLayout } from './components/layout/AdminLayout';
 import { Unauthorized } from './pages/Unauthorized';
 import { Dashboard } from './pages/Dashboard';
+import { AnalyticsPage } from './pages/placeholders/AnalyticsPage';
 import { BookingsPage } from './pages/placeholders/BookingsPage';
 import { CustomersPage } from './pages/placeholders/CustomersPage';
 import { ServicesPage } from './pages/placeholders/ServicesPage';
@@ -60,6 +61,8 @@ const AppRoutes: React.FC = () => {
     switch (normalizedPath) {
       case '/admin':
         return <Dashboard />;
+      case '/admin/analytics':
+        return <AnalyticsPage />;
       case '/admin/bookings':
         return <BookingsPage />;
       case '/admin/customers':

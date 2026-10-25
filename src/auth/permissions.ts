@@ -122,9 +122,10 @@ export const ROLE_PERMISSIONS_MATRIX: Record<UserRole, Permission[]> = {
     'staff.view',
   ],
 
-  // RECEPTIONIST: Booking and customer operations, read-only service/offer catalog
+  // RECEPTIONIST: Booking and customer operations, read-only service/offer catalog, daily cash analytics
   receptionist: [
     'dashboard.view',
+    'analytics.view',
     'bookings.view',
     'bookings.create',
     'bookings.update',
@@ -143,9 +144,10 @@ export const ROLE_PERMISSIONS_MATRIX: Record<UserRole, Permission[]> = {
     'services.view',
   ],
 
-  // CASHIER: Booking and payment-related operational visibility, customer directory, services catalog
+  // CASHIER: Booking and payment-related operational visibility, customer directory, services catalog, cash analytics
   cashier: [
     'dashboard.view',
+    'analytics.view',
     'bookings.view',
     'bookings.update',
     'customers.view',
@@ -201,6 +203,7 @@ export function hasAllPermissions(
  */
 export const ROUTE_PERMISSION_MAP: Record<string, Permission> = {
   '/admin': 'dashboard.view',
+  '/admin/analytics': 'analytics.view',
   '/admin/bookings': 'bookings.view',
   '/admin/customers': 'customers.view',
   '/admin/services': 'services.view',
