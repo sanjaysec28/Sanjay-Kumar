@@ -1159,7 +1159,7 @@ export const HomepagePage: React.FC = () => {
                     {featuredServices.slice(0, 3).map((s) => (
                       <div key={s.id} className="p-3 rounded-lg bg-white border border-[#E5E7EB] text-xs">
                         <div className="font-bold text-[#171513] truncate">{s.name}</div>
-                        <div className="text-[#6B7280] mt-0.5">${s.price} • {s.durationMinutes} min</div>
+                        <div className="text-[#6B7280] mt-0.5">₹{s.price.toLocaleString('en-IN')} • {s.durationMinutes} min</div>
                       </div>
                     ))}
                   </div>
@@ -1192,7 +1192,7 @@ export const HomepagePage: React.FC = () => {
                       <div key={o.id} className="p-3 rounded-lg bg-white border border-[#E5E7EB] text-xs">
                         <div className="font-bold text-[#171513] truncate">{o.title}</div>
                         <div className="text-[#16A34A] font-semibold mt-0.5">
-                          {o.discountType === 'percentage' ? `${o.discount}% OFF` : `$${o.discount} OFF`}
+                          {o.discountType === 'percentage' ? `${o.discount}% OFF` : `₹${o.discount.toLocaleString('en-IN')} OFF`}
                         </div>
                       </div>
                     ))}

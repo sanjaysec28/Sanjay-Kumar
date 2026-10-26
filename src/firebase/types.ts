@@ -260,6 +260,10 @@ export interface GalleryItem {
   category?: string;
   image_url?: string;
   imageUrl?: string;
+  cloudinary_public_id?: string;
+  cloudinaryPublicId?: string;
+  public_id?: string;
+  publicId?: string;
   alt_text?: string;
   altText?: string;
   active?: boolean;
@@ -268,6 +272,14 @@ export interface GalleryItem {
   featured?: boolean;
   sort_order?: number;
   order?: number;
+  display_order?: number;
+  displayOrder?: number;
+  width?: number;
+  height?: number;
+  format?: string;
+  bytes?: number;
+  uploaded_by?: string;
+  uploadedBy?: string;
   created_at?: unknown;
   createdAt?: unknown;
   updated_at?: unknown;
@@ -281,10 +293,17 @@ export interface NormalizedGalleryItem {
   caption: string;
   category: string;
   imageUrl: string;
+  cloudinaryPublicId?: string;
   altText?: string;
   isPublished: boolean;
   featured: boolean;
   order: number;
+  displayOrder: number;
+  width?: number;
+  height?: number;
+  format?: string;
+  bytes?: number;
+  uploadedBy?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
   raw: Record<string, unknown>;
@@ -301,7 +320,11 @@ export function normalizeGalleryItem(id: string, data: Record<string, any>): Nor
       : true;
 
   const order =
-    data.sort_order != null
+    data.displayOrder != null
+      ? Number(data.displayOrder)
+      : data.display_order != null
+      ? Number(data.display_order)
+      : data.sort_order != null
       ? Number(data.sort_order)
       : data.order != null
       ? Number(data.order)
@@ -312,11 +335,23 @@ export function normalizeGalleryItem(id: string, data: Record<string, any>): Nor
     title: data.title || data.name || 'Untitled Showcase',
     caption: data.caption || data.description || '',
     category: data.category || 'Portfolio',
-    imageUrl: data.image_url || data.imageUrl || '',
+    imageUrl: data.image_url || data.imageUrl || data.secure_url || '',
+    cloudinaryPublicId:
+      data.cloudinaryPublicId ||
+      data.cloudinary_public_id ||
+      data.public_id ||
+      data.publicId ||
+      undefined,
     altText: data.alt_text || data.altText || data.title || '',
     isPublished,
     featured: Boolean(data.featured),
     order,
+    displayOrder: order,
+    width: data.width != null ? Number(data.width) : undefined,
+    height: data.height != null ? Number(data.height) : undefined,
+    format: data.format || undefined,
+    bytes: data.bytes != null ? Number(data.bytes) : undefined,
+    uploadedBy: data.uploadedBy || data.uploaded_by || undefined,
     createdAt: data.created_at || data.createdAt || null,
     updatedAt: data.updated_at || data.updatedAt || null,
     raw: data,

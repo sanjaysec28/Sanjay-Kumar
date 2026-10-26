@@ -12,7 +12,9 @@ export type AdminRoute =
   | '/admin/homepage'
   | '/admin/staff'
   | '/admin/settings'
-  | '/admin/unauthorized';
+  | '/admin/unauthorized'
+  | '/gallery'
+  | '/lookbook';
 
 interface RouterContextType {
   currentPath: string;

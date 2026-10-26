@@ -16,6 +16,7 @@ import {
   type UserRole,
   normalizeBooking,
   normalizeService,
+  normalizeGalleryItem,
 } from '../firebase/types';
 import { COLLECTIONS } from '../firebase/collections';
 
@@ -1148,13 +1149,141 @@ function runRbacTestSuite() {
     'P5.5. Verified Cash Revenue strictly equals sum of actual cash collected (3500 + 3000 = 6500), ignoring unattended and zero-cash visits'
   );
 
-  // Test 6: Route permission for Cash Revenue Report (/admin/analytics)
+  // P5.6. Route permission for Cash Revenue Report (/admin/analytics)
   assert(hasPermission('admin', 'analytics.view'), 'P5.6. Admin has analytics.view permission');
   assert(hasPermission('manager', 'analytics.view'), 'P5.6. Manager has analytics.view permission');
   assert(hasPermission('receptionist', 'analytics.view'), 'P5.6. Receptionist has analytics.view permission');
   assert(hasPermission('cashier', 'analytics.view'), 'P5.6. Cashier has analytics.view permission');
   assert(!hasPermission('stylist', 'analytics.view'), 'P5.6. Stylist CANNOT view analytics');
   assert(!hasPermission('customer', 'analytics.view'), 'P5.6. Customer CANNOT view analytics');
+
+  // ==========================================
+  // PROMPT 9: GALLERY MANAGEMENT & CLOUDINARY INTEGRATION TESTS
+  // ==========================================
+  console.log('\n--- GALLERY MANAGEMENT & CLOUDINARY INTEGRATION TESTS ---');
+
+  // P9.1. Gallery Document Normalization with Cloudinary Metadata
+  const rawGalleryDoc = {
+    title: 'Royal Bridal Hair & Crown Styling',
+    name: 'Royal Bridal Hair & Crown Styling',
+    caption: 'Bespoke bridal styling crafted in our private sanctuary suite',
+    category: 'Bridal & Occasion',
+    image_url: 'https://res.cloudinary.com/musha-empire/image/upload/v1234567/musha_empire/gallery/bridal_crown.jpg',
+    cloudinary_public_id: 'musha_empire/gallery/bridal_crown',
+    alt_text: 'Royal bridal hair styling with crown at Musha Empire',
+    published: true,
+    isPublished: true,
+    featured: true,
+    displayOrder: 1,
+    sort_order: 1,
+    width: 1920,
+    height: 1080,
+    format: 'jpg',
+    bytes: 450123,
+    uploaded_by: 'admin@mushaempire.com',
+  };
+
+  const normalizedGallery = normalizeGalleryItem('gal-doc-01', rawGalleryDoc);
+  assert(normalizedGallery.id === 'gal-doc-01', 'P9.1. Gallery document ID preserved');
+  assert(normalizedGallery.title === 'Royal Bridal Hair & Crown Styling', 'P9.1. Title correctly extracted');
+  assert(normalizedGallery.category === 'Bridal & Occasion', 'P9.1. Category correctly extracted');
+  assert(normalizedGallery.imageUrl.includes('res.cloudinary.com'), 'P9.1. Cloudinary image URL mapped');
+  assert(normalizedGallery.cloudinaryPublicId === 'musha_empire/gallery/bridal_crown', 'P9.1. Cloudinary public ID mapped');
+  assert(normalizedGallery.displayOrder === 1, 'P9.1. displayOrder extracted correctly');
+  assert(normalizedGallery.isPublished === true, 'P9.1. Publication status normalized to true');
+  assert(normalizedGallery.featured === true, 'P9.1. Featured status normalized to true');
+  assert(normalizedGallery.width === 1920 && normalizedGallery.height === 1080, 'P9.1. Image dimensions preserved');
+  assert(normalizedGallery.uploadedBy === 'admin@mushaempire.com', 'P9.1. Author / uploadedBy preserved');
+
+  // P9.2. Gallery Display Order and Fallback Handling
+  const galleryItemWithLegacyOrder = normalizeGalleryItem('gal-doc-02', {
+    title: 'Balayage Glow',
+    sort_order: 5,
+    active: true,
+  });
+  assert(galleryItemWithLegacyOrder.displayOrder === 5, 'P9.2. Legacy sort_order mapped to displayOrder');
+  assert(galleryItemWithLegacyOrder.order === 5, 'P9.2. Legacy order field synced');
+  assert(galleryItemWithLegacyOrder.isPublished === true, 'P9.2. Legacy active: true mapped to isPublished: true');
+
+  const galleryDraftItem = normalizeGalleryItem('gal-doc-03', {
+    title: 'Unpublished Style',
+    published: false,
+    order: 10,
+  });
+  assert(galleryDraftItem.isPublished === false, 'P9.2. Draft status correctly parsed as false');
+
+  // P9.3. Cloudinary File Type and Size Validation Simulation
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/avif'];
+  const maxSizeBytes = 10 * 1024 * 1024; // 10MB
+
+  const testFileValidator = (type: string, size: number): { valid: boolean; error?: string } => {
+    if (!allowedTypes.includes(type.toLowerCase())) {
+      return { valid: false, error: 'Invalid file type.' };
+    }
+    if (size > maxSizeBytes) {
+      return { valid: false, error: 'File size exceeds 10MB.' };
+    }
+    return { valid: true };
+  };
+
+  assert(testFileValidator('image/jpeg', 2 * 1024 * 1024).valid, 'P9.3. JPEG under 10MB accepted');
+  assert(testFileValidator('image/png', 5 * 1024 * 1024).valid, 'P9.3. PNG under 10MB accepted');
+  assert(testFileValidator('image/webp', 1 * 1024 * 1024).valid, 'P9.3. WebP under 10MB accepted');
+  assert(!testFileValidator('application/pdf', 500000).valid, 'P9.3. Non-image PDF rejected');
+  assert(!testFileValidator('text/html', 1000).valid, 'P9.3. HTML file rejected');
+  assert(!testFileValidator('image/jpeg', 12 * 1024 * 1024).valid, 'P9.3. 12MB image rejected (>10MB)');
+
+  // P9.4. Cloudinary Image Optimization Helper
+  const testOptimizeHelper = (url: string, width?: number) => {
+    if (!url || !url.includes('res.cloudinary.com')) return url;
+    const parts = url.split('/upload/');
+    if (parts.length !== 2) return url;
+    const transforms = ['f_auto', 'q_auto'];
+    if (width) transforms.push(`w_${width}`);
+    return `${parts[0]}/upload/${transforms.join(',')}/${parts[1]}`;
+  };
+
+  const sampleCloudinaryUrl = 'https://res.cloudinary.com/musha-empire/image/upload/v1/musha_empire/gallery/style.jpg';
+  const optimized = testOptimizeHelper(sampleCloudinaryUrl, 720);
+  assert(optimized.includes('f_auto,q_auto,w_720'), 'P9.4. Cloudinary URL transformed with f_auto,q_auto,w_720');
+
+  const externalUrl = 'https://images.unsplash.com/photo-1234';
+  assert(testOptimizeHelper(externalUrl, 720) === externalUrl, 'P9.4. External non-Cloudinary URLs passed through unaltered');
+
+  // P9.5. Gallery RBAC Matrix
+  assert(hasPermission('admin', 'gallery.view'), 'P9.5. Admin can view gallery');
+  assert(hasPermission('admin', 'gallery.create'), 'P9.5. Admin can upload/create gallery item');
+  assert(hasPermission('admin', 'gallery.update'), 'P9.5. Admin can update/reorder/publish gallery item');
+  assert(hasPermission('admin', 'gallery.delete'), 'P9.5. Admin can delete gallery item');
+
+  assert(hasPermission('manager', 'gallery.view'), 'P9.5. Manager can view gallery');
+  assert(hasPermission('manager', 'gallery.create'), 'P9.5. Manager can upload/create gallery item');
+  assert(hasPermission('manager', 'gallery.update'), 'P9.5. Manager can update/reorder/publish gallery item');
+  assert(!hasPermission('manager', 'gallery.delete'), 'P9.5. Manager CANNOT delete gallery item (Admin only)');
+
+  assert(!hasPermission('receptionist', 'gallery.create'), 'P9.5. Receptionist CANNOT create gallery items');
+  assert(!hasPermission('stylist', 'gallery.create'), 'P9.5. Stylist CANNOT create gallery items');
+  assert(!hasPermission('cashier', 'gallery.create'), 'P9.5. Cashier CANNOT create gallery items');
+  assert(!hasPermission('customer', 'gallery.view'), 'P9.5. Customer CANNOT access admin gallery route');
+
+  // P9.6. Public Website Live Lookbook Filtering & Sorting
+  const allLookbookItems = [
+    normalizeGalleryItem('g1', { title: 'First Look', displayOrder: 2, isPublished: true, category: 'Hair' }),
+    normalizeGalleryItem('g2', { title: 'Second Look', displayOrder: 0, isPublished: true, category: 'Bridal' }),
+    normalizeGalleryItem('g3', { title: 'Draft Look', displayOrder: 1, isPublished: false, category: 'Hair' }),
+    normalizeGalleryItem('g4', { title: 'Third Look', displayOrder: 1, isPublished: true, category: 'Spa' }),
+  ];
+
+  // Public website rule: ONLY published items
+  const publicShown = allLookbookItems.filter((item) => item.isPublished);
+  assert(publicShown.length === 3, 'P9.6. Public customer website displays ONLY published gallery items (3 of 4)');
+  assert(!publicShown.some((i) => i.id === 'g3'), 'P9.6. Draft item g3 strictly excluded from customer view');
+
+  // Sorting rule: displayOrder ascending
+  publicShown.sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0));
+  assert(publicShown[0].id === 'g2', 'P9.6. Lowest displayOrder (#0) appears first');
+  assert(publicShown[1].id === 'g4', 'P9.6. displayOrder (#1) appears second');
+  assert(publicShown[2].id === 'g1', 'P9.6. displayOrder (#2) appears third');
 
   console.log(`\n========================================`);
 

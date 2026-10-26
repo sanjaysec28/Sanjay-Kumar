@@ -18,11 +18,17 @@ import { GalleryPage } from './pages/placeholders/GalleryPage';
 import { HomepagePage } from './pages/placeholders/HomepagePage';
 import { StaffPage } from './pages/placeholders/StaffPage';
 import { SettingsPage } from './pages/placeholders/SettingsPage';
+import { PublicGallery } from './pages/PublicGallery';
 import { ROUTE_PERMISSION_MAP, hasPermission } from './auth/permissions';
 
 const AppRoutes: React.FC = () => {
   const { currentPath, navigate } = useRouter();
   const { role, isAuthorized, user, loading } = useAuth();
+
+  // Public customer website routes: Live Lookbook & Gallery
+  if (currentPath === '/gallery' || currentPath === '/lookbook') {
+    return <PublicGallery />;
+  }
 
   // Redirect /admin/login to /admin dashboard
   if (currentPath === '/admin/login') {
@@ -44,6 +50,11 @@ const AppRoutes: React.FC = () => {
   const normalizedPath = currentPath.endsWith('/') && currentPath.length > 1
     ? currentPath.slice(0, -1)
     : currentPath;
+
+  // Additional check for normalized public gallery
+  if (normalizedPath === '/gallery' || normalizedPath === '/lookbook') {
+    return <PublicGallery />;
+  }
 
   const requiredPermission = ROUTE_PERMISSION_MAP[normalizedPath];
 
